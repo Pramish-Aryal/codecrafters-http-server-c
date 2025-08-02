@@ -1,0 +1,502 @@
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+
+////////////////////////////////////////
+// prelude starts
+
+#define KB(x) (1024 * x)
+#define MB(x) (KB(x) * 1024)
+#define GB(x) (MB(x) * 1024)
+#define TB(x) (GB(x) * 1024)
+
+// taken from: https://www.gingerbill.org/article/2019/02/08/memory-allocation-strategies-002/
+bool is_power_of_two(uintptr_t x)
+{
+    return (x & (x - 1)) == 0;
+}
+
+uintptr_t align_forward(uintptr_t ptr, size_t align)
+{
+    uintptr_t p, a, modulo;
+
+    assert(is_power_of_two(align));
+
+    p = ptr;
+    a = (uintptr_t)align;
+    // Same as (p % a) but faster as 'a' is a power of two
+    modulo = p & (a - 1);
+
+    if (modulo != 0) {
+        // If 'p' address is not aligned, push the address to the
+        // next value which is aligned
+        p += a - modulo;
+    }
+    return p;
+}
+
+#ifndef DEFAULT_ALIGNMENT
+#define DEFAULT_ALIGNMENT (2 * sizeof(void*))
+#endif
+
+typedef struct Arena Arena;
+struct Arena {
+    unsigned char* buf;
+    size_t buf_len;
+    size_t prev_offset;
+    size_t curr_offset;
+};
+
+void arena_init(Arena* a, void* backing_buffer, size_t backing_buffer_length)
+{
+    a->buf = (unsigned char*)backing_buffer;
+    a->buf_len = backing_buffer_length;
+    a->curr_offset = 0;
+    a->prev_offset = 0;
+}
+
+void* arena_alloc_align(Arena* a, size_t size, size_t align)
+{
+    // Align 'curr_offset' forward to the specified alignment
+    uintptr_t curr_ptr = (uintptr_t)a->buf + (uintptr_t)a->curr_offset;
+    uintptr_t offset = align_forward(curr_ptr, align);
+    offset -= (uintptr_t)a->buf; // Change to relative offset
+
+    // Check to see if the backing memory has space left
+    if (offset + size <= a->buf_len) {
+        void* ptr = &a->buf[offset];
+        a->prev_offset = offset;
+        a->curr_offset = offset + size;
+
+        // Zero new memory by default
+        memset(ptr, 0, size);
+        return ptr;
+    }
+    // Return NULL if the arena is out of memory (or handle differently)
+    return NULL;
+}
+
+// Because C doesn't have default parameters
+void* arena_alloc(Arena* a, size_t size)
+{
+    return arena_alloc_align(a, size, DEFAULT_ALIGNMENT);
+}
+
+void arena_free(Arena* a, void* ptr)
+{
+    // Do nothing
+}
+
+void* arena_resize_align(Arena* a, void* old_memory, size_t old_size, size_t new_size, size_t align)
+{
+    unsigned char* old_mem = (unsigned char*)old_memory;
+
+    assert(is_power_of_two(align));
+
+    if (old_mem == NULL || old_size == 0) {
+        return arena_alloc_align(a, new_size, align);
+    } else if (a->buf <= old_mem && old_mem < a->buf + a->buf_len) {
+        if (a->buf + a->prev_offset == old_mem) {
+            a->curr_offset = a->prev_offset + new_size;
+            if (new_size > old_size) {
+                // Zero the new memory by default
+                memset(&a->buf[a->curr_offset], 0, new_size - old_size);
+            }
+            return old_memory;
+        } else {
+            void* new_memory = arena_alloc_align(a, new_size, align);
+            size_t copy_size = old_size < new_size ? old_size : new_size;
+            // Copy across old memory to the new memory
+            memmove(new_memory, old_memory, copy_size);
+            return new_memory;
+        }
+
+    } else {
+        assert(0 && "Memory is out of bounds of the buffer in this arena");
+        return NULL;
+    }
+}
+
+// Because C doesn't have default parameters
+void* arena_resize(Arena* a, void* old_memory, size_t old_size, size_t new_size)
+{
+    return arena_resize_align(a, old_memory, old_size, new_size, DEFAULT_ALIGNMENT);
+}
+
+void arena_free_all(Arena* a)
+{
+    a->curr_offset = 0;
+    a->prev_offset = 0;
+}
+
+// Extra Features
+typedef struct Temp_Arena_Memory Temp_Arena_Memory;
+struct Temp_Arena_Memory {
+    Arena* arena;
+    size_t prev_offset;
+    size_t curr_offset;
+};
+
+Temp_Arena_Memory temp_arena_memory_begin(Arena* a)
+{
+    Temp_Arena_Memory temp;
+    temp.arena = a;
+    temp.prev_offset = a->prev_offset;
+    temp.curr_offset = a->curr_offset;
+    return temp;
+}
+
+void temp_arena_memory_end(Temp_Arena_Memory temp)
+{
+    temp.arena->prev_offset = temp.prev_offset;
+    temp.arena->curr_offset = temp.curr_offset;
+}
+
+// usage:
+/*
+unsigned char backing_buffer[256];
+Arena a = {0};
+arena_init(&a, backing_buffer, 256);
+
+for (i = 0; i < 10; i++) {
+        int *x;
+        float *f;
+        char *str;
+
+        // Reset all arena offsets for each loop
+        arena_free_all(&a);
+
+        x = (int *)arena_alloc(&a, sizeof(int));
+        f = (float *)arena_alloc(&a, sizeof(float));
+        str = arena_alloc(&a, 10);
+
+        *x = 123;
+        *f = 987;
+        memmove(str, "Hellope", 7);
+
+        printf("%p: %d\n", x, *x);
+        printf("%p: %f\n", f, *f);
+        printf("%p: %s\n", str, str);
+
+        str = arena_resize(&a, str, 10, 16);
+        memmove(str+7, " world!", 7);
+        printf("%p: %s\n", str, str);
+}
+
+arena_free_all(&a);
+*/
+
+// prelude ends
+////////////////////////////////////////
+
+////////////////////////////////////////
+// types start
+
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+typedef struct String {
+    char* data;
+    size_t len;
+} String;
+
+typedef struct StringView {
+    const char* data;
+    size_t len;
+} StringView;
+
+// types end
+////////////////////////////////////////
+
+////////////////////////////////////////
+// function impl starts
+
+#define internal static
+
+internal bool is_space(char c)
+{
+    return c == ' ' || c == '\r' || c == '\n' || c == '\t';
+}
+internal bool is_digit(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+////////////////////////////////////////
+// String and StringView impl start
+
+// printf macros for StringView
+#define SV_Fmt "%.*s"
+#define SV_Arg(sv) (int)(sv).len, (sv).data
+
+internal String
+sv_to_owned(Arena* arena, StringView sv)
+{
+    String result = {};
+    result.len = sv.len;
+    result.data = arena_alloc(arena, result.len + 1); // owned strings are always null terminated
+    memcpy(result.data, sv.data, sv.len);
+    result.data[result.len] = 0;
+    return result;
+}
+
+internal StringView
+string_to_sv(String s)
+{
+    StringView result = {
+        .data = s.data,
+        .len = s.len
+    };
+    return result;
+}
+
+internal StringView
+sv_from_parts(const char* data, size_t len)
+{
+    StringView sv = {
+        .data = data,
+        .len = len,
+    };
+    return sv;
+}
+
+internal StringView
+sv_from_cstr(const char* cstr)
+{
+    StringView sv = {
+        .data = cstr,
+        .len = strlen(cstr),
+    };
+    return sv;
+}
+
+internal StringView
+sv_trim_left(StringView sv)
+{
+    int i = 0;
+    while (i < sv.len && is_space(sv.data[i]))
+        i++;
+    sv.data += i;
+    sv.len -= i;
+    return sv;
+}
+
+internal StringView
+sv_trim_right(StringView sv)
+{
+    int i = 0;
+    while (i < sv.len && is_space(sv.data[sv.len - 1 - i]))
+        i++;
+    sv.len -= i;
+    return sv;
+}
+
+internal StringView
+sv_trim(StringView sv)
+{
+    return sv_trim_left(sv_trim_right(sv));
+}
+
+internal StringView
+sv_chop_left(StringView* sv, size_t n)
+{
+    if (n > sv->len) {
+        n = sv->len;
+    }
+    StringView result = sv_from_parts(sv->data, n);
+    sv->data += n;
+    sv->len -= n;
+    return result;
+}
+
+internal StringView
+sv_chop_right(StringView* sv, size_t n)
+{
+    if (n > sv->len) {
+        n = sv->len;
+    }
+    StringView result = sv_from_parts(sv->data + sv->len - n, n);
+    sv->len -= n;
+    return result;
+}
+
+internal bool
+sv_index_of(StringView sv, char c, size_t* index)
+{
+    int i = 0;
+    while (i < sv.len && sv.data[i] != c)
+        i++;
+    if (i < sv.len) {
+        if (index) {
+            *index = i;
+        }
+        return true;
+    } else {
+        return false;
+    }
+}
+
+internal bool
+sv_eq(StringView a, StringView b)
+{
+    if (a.len != b.len)
+        return false;
+    return memcmp(a.data, b.data, a.len) == 0;
+}
+
+internal bool
+sv_eq_ignorecase(StringView a, StringView b)
+{
+    if (a.len != b.len)
+        return false;
+    for (int i = 0; i < a.len; ++i) {
+        if (a.data[i] != b.data[i] && a.data[i] != (b.data[i] ^ 0x32)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+internal bool
+sv_starts_with(StringView sv, StringView expected_prefix)
+{
+    if (expected_prefix.len <= sv.len) {
+        StringView actual_prefix = sv_from_parts(sv.data, expected_prefix.len);
+        return sv_eq(expected_prefix, actual_prefix);
+    }
+    return false;
+}
+
+internal bool
+sv_ends_with(StringView sv, StringView expected_suffix)
+{
+    if (expected_suffix.len <= sv.len) {
+        StringView actual_suffix = sv_from_parts(sv.data + sv.len - expected_suffix.len, expected_suffix.len);
+        return sv_eq(expected_suffix, actual_suffix);
+    }
+}
+
+internal uint64_t
+sv_to_u64(StringView sv)
+{
+    uint64_t result = 0;
+    for (size_t i = 0; i < sv.len && is_digit(sv.data[i]); ++i) {
+        result = result * 10 + (uint64_t)sv.data[i] - '0';
+    }
+    return result;
+}
+
+internal uint64_t
+sv_chop_u64(StringView* sv)
+{
+    uint64_t result = 0;
+    while (sv->len > 0 && is_digit(*sv->data)) {
+        result = result * 10 + *sv->data - '0';
+        sv->len -= 1;
+        sv->data += 1;
+    }
+    return result;
+}
+
+internal StringView
+sv_chop_by_delim(StringView* sv, char delim)
+{
+    int i = 0;
+    while (i < sv->len && sv->data[i] != delim) {
+        i++;
+    }
+    StringView result = sv_from_parts(sv->data, i);
+
+    sv->len -= i + (int)(i < sv->len);
+    sv->data += i + (int)(i < sv->len);
+
+    // if (i < sv->len) {
+    //     sv->len -= i + 1;
+    //     sv->data += i + 1;
+    // } else {
+    //     sv->len -= i;
+    //     sv->data += i;
+    // }
+    return result;
+}
+
+internal StringView
+sv_chop_by_sv(StringView* sv, StringView thicc_delim)
+{
+    StringView window = sv_from_parts(sv->data, thicc_delim.len);
+    size_t i = 0;
+    while (i + thicc_delim.len < sv->len
+        && !(sv_eq(window, thicc_delim))) {
+        i++;
+        window.data++;
+    }
+
+    StringView result = sv_from_parts(sv->data, i);
+
+    if (i + thicc_delim.len == sv->len) {
+        // include last <thicc_delim.len> characters if they aren't equal to thicc_delim
+        result.len += thicc_delim.len;
+    }
+
+    // Chop!
+    sv->data += i + thicc_delim.len;
+    sv->len -= i + thicc_delim.len;
+
+    return result;
+}
+
+internal bool
+sv_try_chop_by_delim(StringView* sv, char delim, StringView* chunk)
+{
+    size_t i = 0;
+    while (i < sv->len && sv->data[i] != delim) {
+        i += 1;
+    }
+
+    StringView result = sv_from_parts(sv->data, i);
+
+    if (i < sv->len) {
+        sv->len -= i + 1;
+        sv->data += i + 1;
+        if (chunk) {
+            *chunk = result;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+internal StringView
+sv_chop_left_while(StringView* sv, bool (*predicate)(char x))
+{
+    size_t i = 0;
+    while (i < sv->len && predicate(sv->data[i])) {
+        i += 1;
+    }
+    return sv_chop_left(sv, i);
+}
+
+internal StringView
+sv_take_left_while(StringView sv, bool (*predicate)(char x))
+{
+    size_t i = 0;
+    while (i < sv.len && predicate(sv.data[i])) {
+        i += 1;
+    }
+    return sv_from_parts(sv.data, i);
+}
+
+// String and StringView impl end
+////////////////////////////////////////
+
+// function impl ends
+////////////////////////////////////////
