@@ -415,16 +415,15 @@ sv_chop_by_delim(StringView* sv, char delim)
     }
     StringView result = sv_from_parts(sv->data, i);
 
-    sv->len -= i + (int)(i < sv->len);
-    sv->data += i + (int)(i < sv->len);
-
-    // if (i < sv->len) {
-    //     sv->len -= i + 1;
-    //     sv->data += i + 1;
-    // } else {
-    //     sv->len -= i;
-    //     sv->data += i;
-    // }
+    // sv->len -= i + (int)(i < sv->len);
+    // sv->data += i + (int)(i < sv->len);
+    if (i < sv->len) {
+        sv->len -= i + 1;
+        sv->data += i + 1;
+    } else {
+        sv->len -= i;
+        sv->data += i;
+    }
     return result;
 }
 

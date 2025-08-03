@@ -73,6 +73,7 @@ int main()
 
     // format to parse: GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\nUser-Agent: curl/7.64.1\r\nAccept: */*\r\n\r\n
     StringView request_line = sv_chop_by_delim(&iter, '\n');
+    printf("request-line: " SV_Fmt "\n", SV_Arg(request_line));
     StringView http_method = sv_chop_by_delim(&request_line, ' '); // GET
     StringView request_target = sv_chop_by_delim(&request_line, ' '); // /index.html
     StringView http_version = sv_chop_by_delim(&request_line, ' '); // HTTP/1.1
@@ -80,14 +81,24 @@ int main()
 
     printf("\nhttp_method: " SV_Fmt "\nrequest_target:" SV_Fmt "\nhttp_version: " SV_Fmt "\n\n", SV_Arg(http_method), SV_Arg(request_target), SV_Arg(http_version));
 
-    const char* buffer;
-    if (sv_eq(request_target, sv_from_cstr("/"))) {
-        buffer = "HTTP/1.1 200 OK\r\n\r\n";
+    String return_buffer;
+    StringView echo = sv_from_cstr("/echo/");
+    if (sv_starts_with(request_target, echo)) {
+        StringView echo_ = sv_chop_left(&request_target, echo.len);
+        assert(sv_eq(echo, echo_));
+        return_buffer = (String) {
+            .data = arena_alloc(arena, 1024),
+            .len = 1024,
+        };
+
+        int written_bytes = snprintf(return_buffer.data, return_buffer.len, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)request_target.len, SV_Arg(request_target));
+        return_buffer.len = written_bytes;
     } else {
-        buffer = "HTTP/1.1 404 Not Found\r\n\r\n";
+        StringView response_404 = sv_from_cstr("HTTP/1.1 404 Not Found\r\n\r\n");
+        return_buffer = sv_to_owned(arena, response_404);
     }
 
-    write(client_fd, buffer, strlen(buffer));
+    write(client_fd, return_buffer.data, return_buffer.len);
 
     // de-init
     close(client_fd);
