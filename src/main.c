@@ -8,59 +8,15 @@
 
 #include "base.h"
 
-int main()
+void* handle_socket_thread(void* arg)
 {
+    int client_fd = *(int*)arg;
+
     Arena arena_stack = { 0 };
     Arena* arena = &arena_stack;
     u32 backing_buffer_len = KB(16);
     char* backing_buffer = malloc(backing_buffer_len);
     arena_init(arena, backing_buffer, backing_buffer_len);
-
-    // Disable output buffering
-    setbuf(stdout, NULL);
-    setbuf(stderr, NULL);
-
-    printf("Logs from your program will appear here!\n");
-
-    int server_fd, client_addr_len;
-    struct sockaddr_in client_addr;
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == -1) {
-        printf("Socket creation failed: %s...\n", strerror(errno));
-        return 1;
-    }
-
-    // Since the tester restarts your program quite often, setting SO_REUSEADDR
-    // ensures that we don't run into 'Address already in use' errors
-    int reuse = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        printf("SO_REUSEADDR failed: %s \n", strerror(errno));
-        return 1;
-    }
-
-    struct sockaddr_in serv_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(4221),
-        .sin_addr = { htonl(INADDR_ANY) },
-    };
-
-    if (bind(server_fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) != 0) {
-        printf("Bind failed: %s \n", strerror(errno));
-        return 1;
-    }
-
-    int connection_backlog = 5;
-    if (listen(server_fd, connection_backlog) != 0) {
-        printf("Listen failed: %s \n", strerror(errno));
-        return 1;
-    }
-
-    printf("Waiting for a client to connect...\n");
-    client_addr_len = sizeof(client_addr);
-
-    int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
-    printf("Client connected\n");
 
     u32 client_buffer_size = 1024;
     char* client_buffer = arena_alloc(arena, client_buffer_size);
@@ -123,8 +79,75 @@ int main()
 
     write(client_fd, return_buffer.data, return_buffer.len);
 
-    // de-init
     close(client_fd);
+    free(backing_buffer);
+
+    return NULL;
+}
+
+int main()
+{
+    Arena arena_stack = { 0 };
+    Arena* arena = &arena_stack;
+    u32 backing_buffer_len = KB(16);
+    char* backing_buffer = malloc(backing_buffer_len);
+    arena_init(arena, backing_buffer, backing_buffer_len);
+
+    ThreadPool* pool = pool_init(arena, 10);
+
+    // Disable output buffering
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
+
+    printf("Logs from your program will appear here!\n");
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) {
+        printf("Socket creation failed: %s...\n", strerror(errno));
+        return 1;
+    }
+
+    // Since the tester restarts your program quite often, setting SO_REUSEADDR
+    // ensures that we don't run into 'Address already in use' errors
+    int reuse = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        printf("SO_REUSEADDR failed: %s \n", strerror(errno));
+        return 1;
+    }
+
+    struct sockaddr_in serv_addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(4221),
+        .sin_addr = { htonl(INADDR_ANY) },
+    };
+
+    if (bind(server_fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) != 0) {
+        printf("Bind failed: %s \n", strerror(errno));
+        return 1;
+    }
+
+    int connection_backlog = 5;
+    if (listen(server_fd, connection_backlog) != 0) {
+        printf("Listen failed: %s \n", strerror(errno));
+        return 1;
+    }
+
+    printf("Waiting for a client to connect...\n");
+
+    for (;;) {
+        struct sockaddr_in client_addr;
+        int client_addr_len = sizeof(client_addr);
+
+        int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
+        printf("New client connected\n");
+
+        int* arg = arena_alloc(arena, sizeof(*arg));
+        *arg = client_fd;
+
+        pool_add_task(pool, handle_socket_thread, arg);
+    }
+
+    // de-init
     close(server_fd);
     free(backing_buffer);
     return 0;

@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include <string.h>
 
+// LINUX SPECIFIC
+#include <pthread.h>
+
 ////////////////////////////////////////
 // prelude starts
 
@@ -225,6 +228,29 @@ typedef struct HashTable {
     size_t len;
 } HashTable;
 
+typedef struct TaskData {
+    void* (*work_routine)(void*);
+    void* arg;
+} TaskData;
+
+#define TASK_QUEUE_MAX 1000
+typedef struct ThreadPool {
+    pthread_t* worker_threads;
+    TaskData* task_queue;
+    int queue_head, queue_tail;
+    int max_threads;
+    int scheduled;
+    Arena* arena;
+    pthread_mutex_t mutex;
+    pthread_cond_t work_available;
+    pthread_cond_t done;
+} ThreadPool;
+
+struct TaskThreadArgs {
+    ThreadPool* pool;
+    TaskData data;
+};
+
 // types end
 ////////////////////////////////////////
 
@@ -233,7 +259,8 @@ typedef struct HashTable {
 
 #define internal static
 
-internal bool is_space(char c)
+internal bool
+is_space(char c)
 {
     return c == ' ' || c == '\r' || c == '\n' || c == '\t';
 }
@@ -668,6 +695,106 @@ bool hash_table_set(HashTable* table, StringView key, void* value)
 // }
 
 // Hashtable impl ends
+////////////////////////////////////////
+
+////////////////////////////////////////
+// Threadpool impl starts
+
+void* worker_thread_func(void* pool_arg)
+{
+    ThreadPool* pool = pool_arg;
+
+    while (1) {
+        TaskData picked_task;
+
+        pthread_mutex_lock(&pool->mutex);
+
+        while (pool->queue_head == pool->queue_tail) {
+            pthread_cond_wait(&pool->work_available, &pool->mutex);
+        }
+
+        assert(pool->queue_head != pool->queue_tail);
+        picked_task = pool->task_queue[pool->queue_head % TASK_QUEUE_MAX];
+        pool->queue_head++;
+
+        pool->scheduled++;
+
+        pthread_mutex_unlock(&pool->mutex);
+
+        picked_task.work_routine(picked_task.arg);
+
+        pthread_mutex_lock(&pool->mutex);
+        pool->scheduled--;
+
+        if (pool->scheduled == 0) {
+            pthread_cond_signal(&pool->done);
+        }
+        pthread_mutex_unlock(&pool->mutex);
+    }
+    return NULL;
+}
+
+void pool_add_task(ThreadPool* pool, void* (*work_routine)(void*), void* arg)
+{
+    pthread_mutex_lock(&pool->mutex);
+    if (pool->queue_head == pool->queue_tail) {
+        pthread_cond_broadcast(&pool->work_available);
+    }
+
+    TaskData task;
+    task.work_routine = work_routine;
+    task.arg = arg;
+
+    pool->task_queue[pool->queue_tail % TASK_QUEUE_MAX] = task;
+    pool->queue_tail++;
+
+    pthread_mutex_unlock(&pool->mutex);
+}
+
+void pool_wait(ThreadPool* pool)
+{
+    pthread_mutex_lock(&pool->mutex);
+    while (pool->scheduled > 0) {
+        pthread_cond_wait(&pool->done, &pool->mutex);
+    }
+    pthread_mutex_unlock(&pool->mutex);
+}
+
+ThreadPool* pool_init(Arena* arena, int max_threads)
+{
+    ThreadPool* pool = arena_alloc(arena, sizeof(*pool));
+
+    pool->arena = arena;
+    pool->queue_head = pool->queue_tail = 0;
+    pool->scheduled = 0;
+    pool->task_queue = arena_alloc(arena, sizeof(*pool->task_queue) * TASK_QUEUE_MAX);
+
+    pool->max_threads = max_threads;
+    pool->worker_threads = arena_alloc(arena, sizeof(*pool->worker_threads) * max_threads);
+
+    pthread_mutex_init(&pool->mutex, NULL);
+    pthread_cond_init(&pool->work_available, NULL);
+    pthread_cond_init(&pool->done, NULL);
+
+    for (int i = 0; i < max_threads; i++) {
+        pthread_create(&pool->worker_threads[i], NULL, worker_thread_func, pool);
+    }
+
+    return pool;
+}
+
+void pool_destroy(ThreadPool* pool)
+{
+    pool_wait(pool);
+    for (int i = 0; i < pool->max_threads; i++) {
+        pthread_detach(pool->worker_threads[i]);
+    }
+    arena_free(pool->arena, pool->worker_threads);
+    arena_free(pool->arena, pool->task_queue);
+    arena_free(pool->arena, pool);
+}
+
+// Threadpool impl ends
 ////////////////////////////////////////
 
 // function impl ends
