@@ -209,6 +209,7 @@ typedef uint64_t u64;
 typedef struct String {
     char* data;
     size_t len;
+    size_t capacity;
 } String;
 
 typedef struct StringView {
@@ -283,6 +284,7 @@ sv_to_owned(Arena* arena, StringView sv)
 {
     String result = {};
     result.len = sv.len;
+    result.capacity = sv.len;
     result.data = arena_alloc(arena, result.len + 1); // owned strings are always null terminated
     memcpy(result.data, sv.data, sv.len);
     result.data[result.len] = 0;
@@ -317,6 +319,20 @@ string_to_upper(String s)
             s.data[i] ^= 32;
         }
     }
+}
+
+internal bool
+string_concat(String* a, StringView b)
+{
+    if (a->capacity < a->len + b.len) {
+        return false;
+    }
+    char* dest = a->data + a->len;
+    for (int i = 0; i < b.len; ++i) {
+        *dest++ = b.data[i];
+    }
+    a->len += b.len;
+    return true;
 }
 
 internal StringView
