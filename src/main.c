@@ -79,6 +79,17 @@ int main()
     StringView http_version = sv_chop_by_delim(&request_line, ' '); // HTTP/1.1
     assert(sv_trim(request_line).len == 0 && "request line must have been fully parsed");
 
+    HashTable headers = { 0 };
+    hash_table_init(arena, &headers);
+    while (iter.len != 0) {
+        StringView header_line = sv_chop_by_delim(&iter, '\n');
+        StringView header_key = sv_chop_by_delim(&header_line, ':');
+        StringView header_value = sv_trim(header_line);
+        String lower_case_key = sv_to_owned(arena, header_key);
+        string_to_lower(lower_case_key);
+        hash_table_set(&headers, string_to_sv(lower_case_key), sv_to_owned(arena, header_value).data);
+    }
+
     printf("\nhttp_method: " SV_Fmt "\nrequest_target:" SV_Fmt "\nhttp_version: " SV_Fmt "\n\n", SV_Arg(http_method), SV_Arg(request_target), SV_Arg(http_version));
 
     String return_buffer;
@@ -86,6 +97,15 @@ int main()
     if (sv_eq(request_target, sv_from_cstr("/"))) {
         StringView response_200 = sv_from_cstr("HTTP/1.1 200 OK\r\n\r\n");
         return_buffer = sv_to_owned(arena, response_200);
+    } else if (sv_eq(request_target, sv_from_cstr("/user-agent"))) {
+        const char* user_agent_cstr = hash_table_get(&headers, sv_from_cstr("user-agent"));
+        StringView user_agent = sv_from_cstr(user_agent_cstr);
+        return_buffer = (String) {
+            .data = arena_alloc(arena, 1024),
+            .len = 1024,
+        };
+        int written_bytes = snprintf(return_buffer.data, return_buffer.len, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)user_agent.len, SV_Arg(user_agent));
+        return_buffer.len = written_bytes;
     } else if (sv_starts_with(request_target, echo)) {
         StringView echo_ = sv_chop_left(&request_target, echo.len);
         assert(sv_eq(echo, echo_));

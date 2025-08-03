@@ -85,7 +85,7 @@ void* arena_alloc(Arena* a, size_t size)
 
 void arena_free(Arena* a, void* ptr)
 {
-    // Do nothing
+    // Do nothing: LET IT LEAK
 }
 
 void* arena_resize_align(Arena* a, void* old_memory, size_t old_size, size_t new_size, size_t align)
@@ -213,6 +213,18 @@ typedef struct StringView {
     size_t len;
 } StringView;
 
+typedef struct HashTableEntry {
+    const char* key;
+    void* value;
+} HashTableEntry;
+
+typedef struct HashTable {
+    HashTableEntry* entries;
+    Arena* arena;
+    size_t capacity;
+    size_t len;
+} HashTable;
+
 // types end
 ////////////////////////////////////////
 
@@ -237,6 +249,8 @@ internal bool is_digit(char c)
 #define SV_Fmt "%.*s"
 #define SV_Arg(sv) (int)(sv).len, (sv).data
 
+#define SV_NULL sv_from_parts(NULL, 0)
+
 internal String
 sv_to_owned(Arena* arena, StringView sv)
 {
@@ -256,6 +270,26 @@ string_to_sv(String s)
         .len = s.len
     };
     return result;
+}
+
+internal void
+string_to_lower(String s)
+{
+    for (int i = 0; i < s.len; ++i) {
+        if (s.data[i] >= 'A' && s.data[i] <= 'Z') {
+            s.data[i] ^= 32;
+        }
+    }
+}
+
+internal void
+string_to_upper(String s)
+{
+    for (int i = 0; i < s.len; ++i) {
+        if (s.data[i] >= 'a' && s.data[i] <= 'z') {
+            s.data[i] ^= 32;
+        }
+    }
 }
 
 internal StringView
@@ -353,12 +387,18 @@ sv_eq(StringView a, StringView b)
 }
 
 internal bool
+sv_eq_string(String s, StringView sv)
+{
+    return sv_eq(string_to_sv(s), sv);
+}
+
+internal bool
 sv_eq_ignorecase(StringView a, StringView b)
 {
     if (a.len != b.len)
         return false;
     for (int i = 0; i < a.len; ++i) {
-        if (a.data[i] != b.data[i] && a.data[i] != (b.data[i] ^ 0x32)) {
+        if (a.data[i] != b.data[i] && a.data[i] != (b.data[i] ^ 32)) {
             return false;
         }
     }
@@ -495,6 +535,139 @@ sv_take_left_while(StringView sv, bool (*predicate)(char x))
 }
 
 // String and StringView impl end
+////////////////////////////////////////
+
+////////////////////////////////////////
+// Hashtable impl starts
+
+#define TABLE_MAX_LOAD 0.75
+
+void hash_table_init(Arena* arena, HashTable* table)
+{
+    table->capacity = 0;
+    table->len = 0;
+    table->entries = NULL;
+    table->arena = arena;
+}
+
+void table_free(HashTable* table)
+{
+    arena_free(table->arena, table->entries);
+    hash_table_init(table->arena, table);
+}
+
+static uint32_t hash_string(const char* key, int length)
+{
+    uint32_t hash = 2166136261u;
+    for (int i = 0; i < length; i++) {
+        hash ^= (uint8_t)key[i];
+        hash *= 16777619;
+    }
+    return hash;
+}
+
+static HashTableEntry* find_entry_(HashTableEntry* entries, int capacity, StringView key)
+{
+    uint32_t index = hash_string(key.data, key.len) % capacity;
+    HashTableEntry* tombstone = NULL;
+
+    for (;;) {
+        HashTableEntry* entry = &entries[index];
+        if (entry->key == NULL) {
+            if (entry->value == NULL) {
+                return tombstone != NULL ? tombstone : entry;
+            } else {
+                if (tombstone == NULL)
+                    tombstone = entry;
+            }
+        } else if (sv_eq(sv_from_cstr(entry->key), key)) {
+            return entry;
+        }
+
+        index = (index + 1) % capacity;
+    }
+}
+
+void* hash_table_get(HashTable* table, StringView key)
+{
+    if (table->len == 0)
+        return NULL;
+
+    HashTableEntry* entry = find_entry_(table->entries, table->capacity, key);
+    if (entry->key == NULL)
+        return NULL;
+
+    return entry->value;
+}
+
+bool hash_table(HashTable* table, StringView key)
+{
+    if (table->len == 0)
+        return false;
+
+    HashTableEntry* entry = find_entry_(table->entries, table->capacity, key);
+    if (entry->key == NULL)
+        return false;
+
+    entry->key = NULL;
+    entry->value = NULL;
+    return true;
+}
+
+static void adjust_capacity(HashTable* table, int capacity)
+{
+    HashTableEntry* entries = arena_alloc(table->arena, sizeof(*entries) * capacity);
+
+    for (int i = 0; i < capacity; ++i) {
+        entries[i].key = NULL;
+        entries[i].value = NULL;
+    }
+
+    table->len = 0;
+    for (int i = 0; i < table->capacity; ++i) {
+        HashTableEntry* entry = &table->entries[i];
+        if (entry->key == NULL)
+            continue;
+
+        HashTableEntry* dest = find_entry_(entries, capacity, sv_from_cstr(entry->key));
+        dest->key = entry->key;
+        dest->value = entry->value;
+        table->len++;
+    }
+
+    arena_free(table->arena, table->entries);
+    table->entries = entries;
+    table->capacity = capacity;
+}
+
+bool hash_table_set(HashTable* table, StringView key, void* value)
+{
+    if (table->len + 1 > table->capacity * TABLE_MAX_LOAD) {
+        int capacity = table->capacity == 0 ? 8 : table->capacity * 2;
+        adjust_capacity(table, capacity);
+    }
+
+    HashTableEntry* entry = find_entry_(table->entries, table->capacity, key);
+    bool is_new_key = entry->key == NULL;
+    if (is_new_key && entry->value == NULL)
+        table->len++;
+
+    entry->key = key.data;
+    entry->value = value;
+    return is_new_key;
+}
+
+// void table_add_all(HashTable* from, HashTable* to)
+// {
+//     for (int i = 0; i < from->capacity; i++) {
+//         HashTableEntry* entry = &from->entries[i];
+//         if (entry->key != NULL) {
+//             tableSet(to, entry->key, entry->value);
+//         }
+//     }
+// }
+
+// Hashtable impl ends
 ////////////////////////////////////////
 
 // function impl ends
