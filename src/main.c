@@ -124,8 +124,12 @@ void* handle_socket_thread(void* arg)
             string_concat(&file_path, sv_from_cstr(global_directory_path));
             string_concat(&file_path, target_file);
             String file = read_entire_file(arena, file_path.data);
-
-            return_buffer.len = snprintf(return_buffer.data, return_buffer.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)file.len, SV_Arg(file));
+            if (file.len == 0) {
+                StringView response_404 = sv_from_cstr("HTTP/1.1 404 Not Found\r\n\r\n");
+                return_buffer = sv_to_owned(arena, response_404);
+            } else {
+                return_buffer.len = snprintf(return_buffer.data, return_buffer.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)file.len, SV_Arg(file));
+            }
         }
     } else if (sv_eq(request_target, sv_from_cstr("/user-agent"))) {
         const char* user_agent_cstr = hash_table_get(&headers, sv_from_cstr("user-agent"));
