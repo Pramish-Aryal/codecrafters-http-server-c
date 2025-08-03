@@ -125,7 +125,7 @@ void* handle_socket_thread(void* arg)
             string_concat(&file_path, target_file);
             String file = read_entire_file(arena, file_path.data);
 
-            return_buffer.len = snprintf(return_buffer.data, return_buffer.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)file.len, SV_Arg(file));
+            return_buffer.len = snprintf(return_buffer.data, return_buffer.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)file.len, SV_Arg(file));
         }
     } else if (sv_eq(request_target, sv_from_cstr("/user-agent"))) {
         const char* user_agent_cstr = hash_table_get(&headers, sv_from_cstr("user-agent"));
