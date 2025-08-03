@@ -643,7 +643,7 @@ void* hash_table_get(HashTable* table, StringView key)
     return entry->value;
 }
 
-bool hash_table(HashTable* table, StringView key)
+bool hash_table_delete(HashTable* table, StringView key)
 {
     if (table->len == 0)
         return false;

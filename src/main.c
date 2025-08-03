@@ -57,6 +57,24 @@ String read_entire_file(Arena* arena, const char* filename)
     };
 }
 
+bool write_entire_file(const char* filename, StringView sv)
+{
+    FILE* file = fopen(filename, "wb");
+    if (!file) {
+        perror("fopen");
+        return false;
+    }
+
+    size_t written = fwrite(sv.data, 1, sv.len, file);
+    if (written != sv.len) {
+        perror("fwrite");
+        fclose(file);
+        return false;
+    }
+
+    fclose(file);
+    return true;
+}
 void* handle_socket_thread(void* arg)
 {
     int client_fd = *(int*)arg;
@@ -86,13 +104,14 @@ void* handle_socket_thread(void* arg)
 
     HashTable headers = { 0 };
     hash_table_init(arena, &headers);
-    while (iter.len != 0) {
-        StringView header_line = sv_chop_by_delim(&iter, '\n');
+    StringView header_line = sv_trim(sv_chop_by_delim(&iter, '\n'));
+    while (header_line.len != 0) {
         StringView header_key = sv_chop_by_delim(&header_line, ':');
         StringView header_value = sv_trim(header_line);
         String lower_case_key = sv_to_owned(arena, header_key);
         string_to_lower(lower_case_key);
         hash_table_set(&headers, string_to_sv(lower_case_key), sv_to_owned(arena, header_value).data);
+        header_line = sv_trim(sv_chop_by_delim(&iter, '\n'));
     }
 
     printf("\nhttp_method: " SV_Fmt "\nrequest_target:" SV_Fmt "\nhttp_version: " SV_Fmt "\n\n", SV_Arg(http_method), SV_Arg(request_target), SV_Arg(http_version));
@@ -122,13 +141,26 @@ void* handle_socket_thread(void* arg)
                 .capacity = 256,
             };
             string_concat(&file_path, sv_from_cstr(global_directory_path));
-            string_concat(&file_path, target_file);
-            String file = read_entire_file(arena, file_path.data);
-            if (file.len == 0) {
-                StringView response_404 = sv_from_cstr("HTTP/1.1 404 Not Found\r\n\r\n");
-                return_buffer = sv_to_owned(arena, response_404);
+            string_concat(&file_path, target_file); // assume file_path is null terminated because file_path is originally filled with zero bytes
+
+            if (sv_eq(http_method, sv_from_cstr("GET"))) {
+                String file = read_entire_file(arena, file_path.data);
+                if (file.len == 0) {
+                    StringView response_404 = sv_from_cstr("HTTP/1.1 404 Not Found\r\n\r\n");
+                    return_buffer = sv_to_owned(arena, response_404);
+                } else {
+                    return_buffer.len = snprintf(return_buffer.data, return_buffer.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)file.len, SV_Arg(file));
+                }
+            } else if (sv_eq(http_method, sv_from_cstr("POST"))) {
+                StringView content_length_str = sv_from_cstr(hash_table_get(&headers, sv_from_cstr("content-length")));
+                int content_length = sv_chop_u64(&content_length_str);
+                StringView content = sv_from_parts(iter.data, content_length);
+                write_entire_file(file_path.data, content);
+                StringView response_201 = sv_from_cstr("HTTP/1.1 201 Created\r\n\r\n");
+                return_buffer = sv_to_owned(arena, response_201);
             } else {
-                return_buffer.len = snprintf(return_buffer.data, return_buffer.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)file.len, SV_Arg(file));
+                StringView response_400 = sv_from_cstr("HTTP/1.1 400 Bad Request\r\n\r\n");
+                return_buffer = sv_to_owned(arena, response_400);
             }
         }
     } else if (sv_eq(request_target, sv_from_cstr("/user-agent"))) {
@@ -176,6 +208,10 @@ int main(int argc, char** argv)
             global_directory_path = argv[i];
         }
         i++;
+    }
+
+    if (global_directory_path == NULL) {
+        global_directory_path = "/tmp/";
     }
 
     ThreadPool* pool = pool_init(arena, 10);
