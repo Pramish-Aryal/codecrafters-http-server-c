@@ -83,7 +83,7 @@ int main()
 
     String return_buffer;
     StringView echo = sv_from_cstr("/echo/");
-    if (sv_starts_with(request_target, sv_from_cstr("/"))) {
+    if (sv_eq(request_target, sv_from_cstr("/"))) {
         StringView response_200 = sv_from_cstr("HTTP/1.1 200 OK\r\n\r\n");
         return_buffer = sv_to_owned(arena, response_200);
     } else if (sv_starts_with(request_target, echo)) {
