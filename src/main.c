@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include "base.h"
 
@@ -76,6 +77,70 @@ bool write_entire_file(const char* filename, StringView sv)
     return true;
 }
 
+// gzip stuff
+#define GZIP_CHUNK 16384
+String gzip_compress_sv(Arena* arena, StringView input)
+{
+    String result = { 0 };
+    z_stream strm = { 0 };
+    int ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY); // 15+16 enables gzip headers
+    if (ret != Z_OK)
+        return result;
+
+    strm.avail_in = input.len;
+    strm.next_in = (Bytef*)input.data;
+
+    do {
+        vec_ensure_cap(arena, &result, result.len + GZIP_CHUNK);
+
+        strm.avail_out = result.capacity - result.len;
+        strm.next_out = (Bytef*)(result.data + result.len);
+
+        ret = deflate(&strm, Z_FINISH);
+        if (ret != Z_OK && ret != Z_STREAM_END) {
+            deflateEnd(&strm);
+            result.len = 0;
+            return result;
+        }
+        result.len = result.capacity - strm.avail_out;
+    } while (ret != Z_STREAM_END);
+
+    deflateEnd(&strm);
+    return result;
+}
+
+String gunzip_decompress_dynamic(Arena* arena, StringView input)
+{
+    String out = { 0 };
+
+    z_stream strm = { 0 };
+    int ret = inflateInit2(&strm, 15 + 16); // 15+16 enables gzip decoding
+    if (ret != Z_OK)
+        return out;
+
+    strm.avail_in = input.len;
+    strm.next_in = (Bytef*)input.data;
+
+    do {
+        vec_ensure_cap(arena, &out, out.len + GZIP_CHUNK);
+
+        strm.avail_out = out.capacity - out.len;
+        strm.next_out = (Bytef*)(out.data + out.len);
+
+        ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END) {
+            inflateEnd(&strm);
+            out.len = 0; // Clear on error
+            return out;
+        }
+
+        out.len = out.capacity - strm.avail_out;
+    } while (ret != Z_STREAM_END);
+
+    inflateEnd(&strm);
+    return out;
+}
+
 #define CONTENT_LENGTH_SV SV_STATIC("content-length")
 #define ACCEPT_ENCODING_SV SV_STATIC("accept-encoding")
 #define CONTENT_ENCODING_SV SV_STATIC("content-encoding")
@@ -96,9 +161,18 @@ typedef struct HttpResponse {
     int client_socket;
 } HttpResponse;
 
-void write_string(HttpResponse* r, StringView str)
+size_t write_string(HttpResponse* r, StringView str)
 {
-    send(r->client_socket, str.data, str.len, 0);
+    return send(r->client_socket, str.data, str.len, 0);
+}
+
+void write_all_bytes(HttpResponse* r, StringView str)
+{
+    while (str.len > 0) {
+        size_t sent = write_string(r, str);
+        str.data += sent;
+        str.len -= sent;
+    }
 }
 
 bool parse_http_request(Arena* arena, HttpRequest* request, StringView* http_request_str)
@@ -387,10 +461,6 @@ void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* respons
         accept_encodings = sv_from_cstr(accept_encodings_cstr);
     };
     StringView echo = sv_from_cstr(hash_table_get(&request->route_params, SV_STATIC("echo")));
-    String response_body = (String) {
-        .data = arena_alloc(arena, 1024),
-        .capacity = 1024,
-    };
 
     bool gzip_found = false;
     if (accept_encodings.len > 0) {
@@ -405,12 +475,21 @@ void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* respons
         }
     }
 
+    String response_body = (String) {
+        .data = arena_alloc(arena, 1024),
+        .capacity = 1024,
+    };
     if (gzip_found) {
-        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
+        String compressed_echo = gzip_compress_sv(arena, echo);
+        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", (int)compressed_echo.len);
+        write_string(response, string_to_sv(response_body));
+
+        write_all_bytes(response, string_to_sv(compressed_echo));
+
     } else {
         response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
+        write_string(response, string_to_sv(response_body));
     }
-    write_string(response, string_to_sv(response_body));
 }
 
 void handle_route_files(Arena* arena, HttpRequest* request, HttpResponse* response)

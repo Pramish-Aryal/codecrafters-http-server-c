@@ -284,11 +284,11 @@ internal bool is_digit(char c)
 
 #define vec_ensure_cap(arena, v, new_count)                                                                                 \
     do {                                                                                                                    \
-        if (new_count >= (v)->capacity) {                                                                                   \
+        if ((new_count) >= (v)->capacity) {                                                                                 \
             size_t old_cap = (v)->capacity;                                                                                 \
             if ((v)->capacity == 0)                                                                                         \
                 (v)->capacity = VEC_INIT_CAP;                                                                               \
-            while ((v)->capacity <= new_count)                                                                              \
+            while ((v)->capacity <= (new_count))                                                                            \
                 (v)->capacity *= 2;                                                                                         \
             (v)->data = arena_resize((arena), (v)->data, old_cap * sizeof(*(v)->data), (v)->capacity * sizeof(*(v)->data)); \
         }                                                                                                                   \
