@@ -331,7 +331,7 @@ void* handle_socket_thread(void* arg)
 
             // close socket after this request
             {
-                const char* connection_str = hash_table_get(&request.headers, SV_STATIC("Connection"));
+                const char* connection_str = hash_table_get(&request.headers, SV_STATIC("connection"));
                 if (connection_str) {
                     StringView connection = sv_from_cstr(connection_str);
                     if (sv_eq(connection, SV_STATIC("close"))) {
