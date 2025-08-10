@@ -1,12 +1,13 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
-#ifdef ENABLE_GIP
+#ifdef ENABLE_GIP // GZIP is disabled by default because CMAKE takes a bit too long to build the program otherwise
 #include <zlib.h>
 #endif
 
@@ -271,148 +272,186 @@ void* handle_socket_thread(void* arg)
     Arena* arena = &arena_stack;
     u32 backing_buffer_len = MB(1);
     char* backing_buffer = malloc(backing_buffer_len);
-    arena_init(arena, backing_buffer, backing_buffer_len);
 
-    String temp_buffer = { 0 };
-    vec_ensure_cap(arena, &temp_buffer, 1024);
-    String client_buffer = { 0 };
-    i32 bytes_read;
-    i32 total_bytes_read = 0;
+    struct pollfd pfd = { 0 };
 
-    i32 header_end = -1;
-    while ((bytes_read = recv(client_fd, temp_buffer.data, (int)temp_buffer.capacity, 0)) > 0) {
-        vec_append_many(arena, &client_buffer, temp_buffer.data, bytes_read);
-        total_bytes_read += bytes_read;
+    pfd.fd = client_fd;
+    pfd.events = POLLIN;
 
-        // Search for end of headers: "\r\n\r\n"
-        for (i32 i = 0; i < (client_buffer.len - 3); ++i) {
-            if (memcmp(client_buffer.data + i, "\r\n\r\n", 4) == 0) {
-                header_end = i + 4; // body starts after this
-                goto headers_done;
-            }
-        }
-    }
+    bool keep_alive = true;
 
-headers_done:
-    if (header_end == -1) {
-        printf("Malformed request: no header terminator found.\n");
-        close(client_fd);
-        return NULL;
-    }
+    while (keep_alive) {
 
-    StringView request_view = string_to_sv(client_buffer);
-    HttpRequest request = {};
-    parse_http_request(arena, &request, &request_view); // <- Must extract content_length
-
-    const char* content_length_cstr = hash_table_get(&request.headers, CONTENT_LENGTH_SV);
-    if (content_length_cstr) {
-        StringView content_length_str = sv_from_cstr(content_length_cstr);
-        int content_length = sv_chop_u64(&content_length_str);
-
-        i32 body_bytes_needed = content_length;
-        size_t body_start = header_end;
-
-        while (client_buffer.len < body_start + body_bytes_needed) {
-            bytes_read = recv(client_fd, temp_buffer.data, (int)temp_buffer.capacity, 0);
-            if (bytes_read <= 0) {
-                printf("Client disconnected or error while reading body\n");
-                break;
-            }
-
-            vec_append_many(arena, &client_buffer, temp_buffer.data, bytes_read);
-            total_bytes_read += bytes_read;
-        }
-
-        StringView content = sv_from_parts(request_view.data, content_length);
-        request.body = sv_to_owned(arena, content);
-    }
-
-    HttpResponse response;
-    response.client_socket = client_fd;
-
-    bool mapping_found = false;
-    RouteMapping selected_mapping = { 0 };
-    for (int i = 0; i < server->mappings.len; ++i) {
-        if (mapping_found) {
+        // 10 sec timeout
+        int ret = poll(&pfd, 1, 10000);
+        if (ret < 0) {
+            perror("poll error");
+            break;
+        } else if (ret == 0) {
+            printf("poll: client timeout\n");
             break;
         }
 
-        RouteMapping mapping = server->mappings.data[i];
-        StringView route_sv = string_to_sv(request.route);
-        StringView mapping_route = mapping.route;
+        if (pfd.revents & POLLIN) {
+            arena_init(arena, backing_buffer, backing_buffer_len);
 
-        // NOTE: paths either need to match exactly, or have the same pathing params
+            String temp_buffer = { 0 };
+            vec_ensure_cap(arena, &temp_buffer, 1024);
+            String client_buffer = { 0 };
+            i32 bytes_read;
+            i32 total_bytes_read = 0;
 
-        // /echo/:echo_path/:some_other_path/fixed_path // mapping path
-        // /echo/path_to_echo/other_path/fixed_path // route path
+            i32 header_end = -1;
+            // easier to split the request header + body parsing in two phases, first just the body as such,
+            while ((bytes_read = recv(client_fd, temp_buffer.data, (int)temp_buffer.capacity, 0)) > 0) {
+                vec_append_many(arena, &client_buffer, temp_buffer.data, bytes_read);
+                total_bytes_read += bytes_read;
 
-        // if the path exactly matches, there is no need to do this I guess?
-        if (sv_eq(route_sv, mapping_route)) {
-            // TODO: maybe validate if mapping route doesn't have any route params defined
-            selected_mapping = mapping;
-            mapping_found = true;
-            break;
-        }
-
-        Temp_Arena_Memory temp_arena = temp_arena_memory_begin(arena);
-
-        Segments route_segments = split_segments(arena, route_sv);
-        Segments mapping_route_segments = split_segments(arena, mapping_route);
-
-        if (route_segments.len != mapping_route_segments.len)
-            continue;
-
-        for (int i = 0; i < route_segments.len; ++i) {
-            StringView route_segment = route_segments.data[i];
-            StringView mapping_route_segment = mapping_route_segments.data[i];
-
-            if (sv_starts_with(mapping_route_segment, SV_STATIC(":"))) {
-                // do nothing, we'll do the assignments later
-            } else {
-                if (!sv_eq(route_segment, mapping_route_segment)) {
-                    mapping_found = false;
-                    break;
+                // Search for end of headers: "\r\n\r\n"
+                for (i32 i = 0; i < (client_buffer.len - 3); ++i) {
+                    if (memcmp(client_buffer.data + i, "\r\n\r\n", 4) == 0) {
+                        header_end = i + 4; // body starts after this
+                        goto headers_done;
+                    }
                 }
             }
 
-            selected_mapping = mapping;
-            mapping_found = true;
-        }
-
-        temp_arena_memory_end(temp_arena);
-    }
-
-    if (mapping_found) {
-        // redo the parsing and route_param setting
-        StringView route_sv = string_to_sv(request.route);
-        StringView mapping_route = selected_mapping.route;
-
-        Segments route_segments = split_segments(arena, route_sv);
-        Segments mapping_route_segments = split_segments(arena, mapping_route);
-
-        for (int i = 0; i < route_segments.len; ++i) {
-            StringView route_segment = route_segments.data[i];
-            StringView mapping_route_segment = mapping_route_segments.data[i];
-
-            if (sv_starts_with(mapping_route_segment, SV_STATIC(":"))) {
-                sv_chop_left(&mapping_route_segment, 1);
-                StringView path_var = mapping_route_segment;
-                hash_table_set(&request.route_params, path_var, sv_to_owned(arena, route_segment).data);
+        headers_done:
+            if (header_end == -1) {
+                printf("Malformed request: no header terminator found.\n");
+                break;
             }
-        }
-        assert(selected_mapping.handler && "Handler must be defined");
-        selected_mapping.handler(arena, &request, &response);
-    } else {
-        if (server->default_404_handler) {
-            server->default_404_handler(arena, &request, &response);
-        } else {
-            StringView not_found = SV_STATIC("HTTP/1.1 404 Not Found\r\n"
-                                             "Content-Type: text/html; charset=utf-8\r\n"
-                                             "Content-Length: 18\r\n"
-                                             "Connection: close\r\n"
-                                             "\r\n"
-                                             "<h1>Not found</h1>");
-            write_string(&response, not_found);
+
+            StringView request_view = string_to_sv(client_buffer);
+            HttpRequest request = {};
+            parse_http_request(arena, &request, &request_view); // <- Must extract content_length
+
+            // close socket after this request
+            {
+                const char* connection_str = hash_table_get(&request.headers, SV_STATIC("Connection"));
+                if (connection_str) {
+                    StringView connection = sv_from_cstr(connection_str);
+                    if (sv_eq(connection, SV_STATIC("close"))) {
+                        keep_alive = false;
+                    }
+                }
+            }
+
+            // parse the body in a second phase because its easier to track how much we need to read after
+            // reading the content-length header
+            {
+                const char* content_length_cstr = hash_table_get(&request.headers, CONTENT_LENGTH_SV);
+                if (content_length_cstr) {
+                    StringView content_length_str = sv_from_cstr(content_length_cstr);
+                    int content_length = sv_chop_u64(&content_length_str);
+
+                    i32 body_bytes_needed = content_length;
+                    size_t body_start = header_end;
+
+                    while (client_buffer.len < body_start + body_bytes_needed) {
+                        bytes_read = recv(client_fd, temp_buffer.data, (int)temp_buffer.capacity, 0);
+                        if (bytes_read <= 0) {
+                            printf("Client disconnected or error while reading body\n");
+                            break;
+                        }
+
+                        vec_append_many(arena, &client_buffer, temp_buffer.data, bytes_read);
+                        total_bytes_read += bytes_read;
+                    }
+
+                    StringView content = sv_from_parts(request_view.data, content_length);
+                    request.body = sv_to_owned(arena, content);
+                }
+            }
+
+            HttpResponse response;
+            response.client_socket = client_fd;
+
+            bool mapping_found = false;
+            RouteMapping selected_mapping = { 0 };
+            for (int i = 0; i < server->mappings.len; ++i) {
+                if (mapping_found) {
+                    break;
+                }
+
+                RouteMapping mapping = server->mappings.data[i];
+                StringView route_sv = string_to_sv(request.route);
+                StringView mapping_route = mapping.route;
+
+                // NOTE: paths either need to match exactly, or have the same pathing params
+
+                // /echo/:echo_path/:some_other_path/fixed_path // mapping path
+                // /echo/path_to_echo/other_path/fixed_path // route path
+
+                // if the path exactly matches, there is no need to do this I guess?
+                if (sv_eq(route_sv, mapping_route)) {
+                    // TODO: maybe validate if mapping route doesn't have any route params defined
+                    selected_mapping = mapping;
+                    mapping_found = true;
+                    break;
+                }
+
+                Temp_Arena_Memory temp_arena = temp_arena_memory_begin(arena);
+
+                Segments route_segments = split_segments(arena, route_sv);
+                Segments mapping_route_segments = split_segments(arena, mapping_route);
+
+                if (route_segments.len != mapping_route_segments.len)
+                    continue;
+
+                for (int i = 0; i < route_segments.len; ++i) {
+                    StringView route_segment = route_segments.data[i];
+                    StringView mapping_route_segment = mapping_route_segments.data[i];
+
+                    if (sv_starts_with(mapping_route_segment, SV_STATIC(":"))) {
+                        // do nothing, we'll do the assignments later
+                    } else {
+                        if (!sv_eq(route_segment, mapping_route_segment)) {
+                            mapping_found = false;
+                            break;
+                        }
+                    }
+
+                    selected_mapping = mapping;
+                    mapping_found = true;
+                }
+
+                temp_arena_memory_end(temp_arena);
+            }
+
+            if (mapping_found) {
+                // redo the parsing and route_param setting
+                StringView route_sv = string_to_sv(request.route);
+                StringView mapping_route = selected_mapping.route;
+
+                Segments route_segments = split_segments(arena, route_sv);
+                Segments mapping_route_segments = split_segments(arena, mapping_route);
+
+                for (int i = 0; i < route_segments.len; ++i) {
+                    StringView route_segment = route_segments.data[i];
+                    StringView mapping_route_segment = mapping_route_segments.data[i];
+
+                    if (sv_starts_with(mapping_route_segment, SV_STATIC(":"))) {
+                        sv_chop_left(&mapping_route_segment, 1);
+                        StringView path_var = mapping_route_segment;
+                        hash_table_set(&request.route_params, path_var, sv_to_owned(arena, route_segment).data);
+                    }
+                }
+                assert(selected_mapping.handler && "Handler must be defined");
+                selected_mapping.handler(arena, &request, &response);
+            } else {
+                if (server->default_404_handler) {
+                    server->default_404_handler(arena, &request, &response);
+                } else {
+                    StringView not_found = SV_STATIC("HTTP/1.1 404 Not Found\r\n"
+                                                     "Content-Type: text/html; charset=utf-8\r\n"
+                                                     "Content-Length: 18\r\n"
+                                                     "Connection: close\r\n"
+                                                     "\r\n"
+                                                     "<h1>Not found</h1>");
+                    write_string(&response, not_found);
+                }
+            }
         }
     }
 
