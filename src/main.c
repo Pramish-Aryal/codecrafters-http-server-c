@@ -77,6 +77,8 @@ bool write_entire_file(const char* filename, StringView sv)
 }
 
 #define CONTENT_LENGTH_SV SV_STATIC("content-length")
+#define ACCEPT_ENCODING_SV SV_STATIC("accept-encoding")
+#define CONTENT_ENCODING_SV SV_STATIC("content-encoding")
 #define CONTENT_TYPE_SV SV_STATIC("content-type")
 #define USER_AGENT_SV SV_STATIC("user-agent")
 
@@ -489,13 +491,22 @@ void handle_route_user_agent(Arena* arena, HttpRequest* request, HttpResponse* r
 
 void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* response)
 {
+    StringView accept_encoding = { 0 };
+    const char* accept_encoding_cstr = hash_table_get(&request->headers, ACCEPT_ENCODING_SV);
+    if (accept_encoding_cstr) {
+        accept_encoding = sv_from_cstr(accept_encoding_cstr);
+    };
     StringView echo = sv_from_cstr(hash_table_get(&request->route_params, SV_STATIC("echo")));
     String response_body = (String) {
         .data = arena_alloc(arena, 1024),
         .capacity = 1024,
     };
 
-    response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
+    if (sv_eq(accept_encoding, SV_STATIC("gzip"))) {
+        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
+    } else {
+        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
+    }
     write_string(response, string_to_sv(response_body));
 }
 
