@@ -162,6 +162,7 @@ typedef struct HttpRequest {
     HashTable query_params;
     HashTable route_params;
     String body;
+    bool keep_alive;
 } HttpRequest;
 
 typedef struct HttpResponse {
@@ -326,7 +327,7 @@ void* handle_socket_thread(void* arg)
 
             StringView request_view = string_to_sv(client_buffer);
             HttpRequest request = {};
-            parse_http_request(arena, &request, &request_view); // <- Must extract content_length
+            parse_http_request(arena, &request, &request_view); // must extract content_length
 
             // close socket after this request
             {
@@ -338,6 +339,8 @@ void* handle_socket_thread(void* arg)
                     }
                 }
             }
+
+            request.keep_alive = keep_alive;
 
             // parse the body in a second phase because its easier to track how much we need to read after
             // reading the content-length header
@@ -467,8 +470,13 @@ void* handle_socket_thread(void* arg)
 void handle_route_index(Arena* arena, HttpRequest* request, HttpResponse* response)
 {
     if (sv_eq(string_to_sv(request->method), SV_STATIC("GET"))) {
-        StringView response_200 = SV_STATIC("HTTP/1.1 200 OK\r\n\r\n");
-        write_string(response, response_200);
+        if (request->keep_alive) {
+            StringView response_200 = SV_STATIC("HTTP/1.1 200 OK\r\n\r\n");
+            write_string(response, response_200);
+        } else {
+            StringView response_200_closed = SV_STATIC("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+            write_string(response, response_200_closed);
+        }
     } else {
         StringView response_405 = SV_STATIC("HTTP/1.1 405 Method Not Allowed\r\n"
                                             "Content-Type: text/html; charset=utf-8\r\n"
@@ -482,8 +490,13 @@ void handle_route_index(Arena* arena, HttpRequest* request, HttpResponse* respon
 
 void handle_route_404(Arena* arena, HttpRequest* request, HttpResponse* response)
 {
-    StringView response_404 = SV_STATIC("HTTP/1.1 404 Not Found\r\n\r\n");
-    write_string(response, response_404);
+    if (request->keep_alive) {
+        StringView response_404 = SV_STATIC("HTTP/1.1 404 Not Found\r\n\r\n");
+        write_string(response, response_404);
+    } else {
+        StringView response_404_closed = SV_STATIC("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+        write_string(response, response_404_closed);
+    }
 }
 
 void handle_route_user_agent(Arena* arena, HttpRequest* request, HttpResponse* response)
@@ -494,7 +507,8 @@ void handle_route_user_agent(Arena* arena, HttpRequest* request, HttpResponse* r
         .data = arena_alloc(arena, 1024),
         .capacity = 1024,
     };
-    response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)user_agent.len, SV_Arg(user_agent));
+    response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n%s\r\n" SV_Fmt,
+        (int)user_agent.len, request->keep_alive ? "Connection: close\r\n" : "", SV_Arg(user_agent));
     write_string(response, string_to_sv(response_body));
 }
 
@@ -531,13 +545,15 @@ void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* respons
 #else
         StringView compressed_echo = echo;
 #endif
-        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", (int)compressed_echo.len);
+        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n%s\r\n",
+            (int)compressed_echo.len, request->keep_alive ? "Connection: close\r\n" : "");
         write_string(response, string_to_sv(response_body));
 
         write_all_bytes(response, compressed_echo);
 
     } else {
-        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
+        response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n%s\r\n" SV_Fmt,
+            (int)echo.len, request->keep_alive ? "Connection: close\r\n" : "", SV_Arg(echo));
         write_string(response, string_to_sv(response_body));
     }
 }
@@ -568,21 +584,39 @@ void handle_route_files(Arena* arena, HttpRequest* request, HttpResponse* respon
         if (sv_eq(string_to_sv(request->method), SV_STATIC("GET"))) {
             String file = read_entire_file_arena(arena, file_path.data);
             if (file.len == 0) {
-                StringView response_404 = sv_from_cstr("HTTP/1.1 404 Not Found\r\n\r\n");
-                response_body = sv_to_owned(arena, response_404);
+                if (request->keep_alive) {
+                    StringView response_404 = sv_from_cstr("HTTP/1.1 404 Not Found\r\n\r\n");
+                    response_body = sv_to_owned(arena, response_404);
+                } else {
+                    StringView response_404_closed = SV_STATIC("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+                    response_body = sv_to_owned(arena, response_404_closed);
+                }
             } else {
-                response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)file.len, SV_Arg(file));
+                response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n%s\r\n" SV_Fmt,
+                    (int)file.len, request->keep_alive ? "Connection: close\r\n" : "", SV_Arg(file));
             }
         } else if (sv_eq(string_to_sv(request->method), sv_from_cstr("POST"))) {
             StringView content_length_str = sv_from_cstr(hash_table_get(&request->headers, sv_from_cstr("content-length")));
             int content_length = sv_chop_u64(&content_length_str);
             StringView content = sv_from_parts(request->body.data, content_length);
             write_entire_file(file_path.data, content);
-            StringView response_201 = sv_from_cstr("HTTP/1.1 201 Created\r\n\r\n");
-            response_body = sv_to_owned(arena, response_201);
+
+            if (request->keep_alive) {
+                StringView response_201 = sv_from_cstr("HTTP/1.1 201 Created\r\n\r\n");
+                response_body = sv_to_owned(arena, response_201);
+
+            } else {
+                StringView response_201_closed = SV_STATIC("HTTP/1.1 201 Created\r\nConnection: close\r\n\r\n");
+                response_body = sv_to_owned(arena, response_201_closed);
+            }
         } else {
-            StringView response_400 = sv_from_cstr("HTTP/1.1 400 Bad Request\r\n\r\n");
-            response_body = sv_to_owned(arena, response_400);
+            if (request->keep_alive) {
+                StringView response_400 = sv_from_cstr("HTTP/1.1 400 Bad Request\r\n\r\n");
+                response_body = sv_to_owned(arena, response_400);
+            } else {
+                StringView response_400_closed = SV_STATIC("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+                response_body = sv_to_owned(arena, response_400_closed);
+            }
         }
     }
     write_string(response, string_to_sv(response_body));
