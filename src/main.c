@@ -508,7 +508,7 @@ void handle_route_user_agent(Arena* arena, HttpRequest* request, HttpResponse* r
         .capacity = 1024,
     };
     response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n%s\r\n" SV_Fmt,
-        (int)user_agent.len, request->keep_alive ? "Connection: close\r\n" : "", SV_Arg(user_agent));
+        (int)user_agent.len, request->keep_alive ? "" : "Connection: close\r\n", SV_Arg(user_agent));
     write_string(response, string_to_sv(response_body));
 }
 
@@ -546,14 +546,14 @@ void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* respons
         StringView compressed_echo = echo;
 #endif
         response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n%s\r\n",
-            (int)compressed_echo.len, request->keep_alive ? "Connection: close\r\n" : "");
+            (int)compressed_echo.len, request->keep_alive ? "" : "Connection: close\r\n");
         write_string(response, string_to_sv(response_body));
 
         write_all_bytes(response, compressed_echo);
 
     } else {
         response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n%s\r\n" SV_Fmt,
-            (int)echo.len, request->keep_alive ? "Connection: close\r\n" : "", SV_Arg(echo));
+            (int)echo.len, request->keep_alive ? "" : "Connection: close\r\n", SV_Arg(echo));
         write_string(response, string_to_sv(response_body));
     }
 }
@@ -593,7 +593,7 @@ void handle_route_files(Arena* arena, HttpRequest* request, HttpResponse* respon
                 }
             } else {
                 response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n%s\r\n" SV_Fmt,
-                    (int)file.len, request->keep_alive ? "Connection: close\r\n" : "", SV_Arg(file));
+                    (int)file.len, request->keep_alive ? "" : "Connection: close\r\n", SV_Arg(file));
             }
         } else if (sv_eq(string_to_sv(request->method), sv_from_cstr("POST"))) {
             StringView content_length_str = sv_from_cstr(hash_table_get(&request->headers, sv_from_cstr("content-length")));
