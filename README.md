@@ -1,37 +1,18 @@
-[![progress-banner](https://backend.codecrafters.io/progress/http-server/5fb35ae7-4a2e-4911-8c4b-fa2db0132b25)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# HTTP Server
 
-This is a starting point for C solutions to the
-["Build Your Own HTTP server" Challenge](https://app.codecrafters.io/courses/http-server/overview).
+Finished the [Codecrafters HTTP server](https://app.codecrafters.io/courses/http-server/overview) challenge in C.
 
-[HTTP](https://en.wikipedia.org/wiki/Hypertext_Transfer_Protocol) is the
-protocol that powers the web. In this challenge, you'll build a HTTP/1.1 server
-that is capable of serving multiple clients.
-
-Along the way you'll learn about TCP servers,
-[HTTP request syntax](https://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html),
-and more.
-
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
-
-# Passing the first stage
-
-The entry point for your HTTP server implementation is in `src/main.c`. Study
-and uncomment the relevant code, and push your changes to pass the first stage:
-
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
+Instructions:
+Simply use
+```bash
+./your_program.sh
 ```
+to run the program.
 
-Time to move on to the next stage!
+Dependencies:
+- zlib (for gzip compression)
 
-# Stage 2 & beyond
+The code doesn't have any local tests because codecrafters did the testing for me :). Will add the tests in the future if/when the project
+extends its current scope. (Check TODOs in main.c).
 
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `cmake` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `src/main.c`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+**Disclaimer**: This is mostly bad code written just to see how a http-server is written in C. Actual production code would look very different. I took a lot of shortcuts and have lots of "improvements" in mind :*.
