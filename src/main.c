@@ -5,7 +5,10 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#ifdef ENABLE_GIP
 #include <zlib.h>
+#endif
 
 #include "base.h"
 
@@ -77,7 +80,7 @@ bool write_entire_file(const char* filename, StringView sv)
     return true;
 }
 
-// gzip stuff
+#ifdef ENABLE_GIP
 #define GZIP_CHUNK 16384
 String gzip_compress_sv(Arena* arena, StringView input)
 {
@@ -140,6 +143,7 @@ String gunzip_decompress_dynamic(Arena* arena, StringView input)
     inflateEnd(&strm);
     return out;
 }
+#endif
 
 #define CONTENT_LENGTH_SV SV_STATIC("content-length")
 #define ACCEPT_ENCODING_SV SV_STATIC("accept-encoding")
@@ -480,11 +484,15 @@ void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* respons
         .capacity = 1024,
     };
     if (gzip_found) {
+#ifdef ENABLE_GIP
         String compressed_echo = gzip_compress_sv(arena, echo);
+#else
+        StringView compressed_echo = echo;
+#endif
         response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", (int)compressed_echo.len);
         write_string(response, string_to_sv(response_body));
 
-        write_all_bytes(response, string_to_sv(compressed_echo));
+        write_all_bytes(response, compressed_echo);
 
     } else {
         response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
