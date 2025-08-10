@@ -7,7 +7,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#ifdef ENABLE_GIP // GZIP is disabled by default because CMAKE takes a bit too long to build the program otherwise
+#define ENABLE_GZIP
+
+#ifdef ENABLE_GZIP // GZIP is disabled by default because CMAKE takes a bit too long to build the program otherwise
 #include <zlib.h>
 #endif
 
@@ -81,7 +83,7 @@ bool write_entire_file(const char* filename, StringView sv)
     return true;
 }
 
-#ifdef ENABLE_GIP
+#ifdef ENABLE_GZIP
 #define GZIP_CHUNK 16384
 String gzip_compress_sv(Arena* arena, StringView input)
 {
@@ -523,8 +525,9 @@ void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* respons
         .capacity = 1024,
     };
     if (gzip_found) {
-#ifdef ENABLE_GIP
-        String compressed_echo = gzip_compress_sv(arena, echo);
+#ifdef ENABLE_GZIP
+        String compressed_echo_owned = gzip_compress_sv(arena, echo);
+        StringView compressed_echo = string_to_sv(compressed_echo_owned);
 #else
         StringView compressed_echo = echo;
 #endif
