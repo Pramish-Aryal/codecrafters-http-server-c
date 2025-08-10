@@ -9,10 +9,17 @@
 ////////////////////////////////////////
 // prelude starts
 
+#define ARRAY_COUNT(a) (sizeof(a) / sizeof(*(a)))
+
 #define KB(x) (1024 * x)
 #define MB(x) (KB(x) * 1024)
 #define GB(x) (MB(x) * 1024)
 #define TB(x) (GB(x) * 1024)
+
+#define MIN(x, y) ((x) <= (y) ? (x) : (y))
+#define MAX(x, y) ((x) >= (y) ? (x) : (y))
+#define CLAMP_MAX(x, max) MIN(x, max)
+#define CLAMP_MIN(x, min) MAX(x, min)
 
 // taken from: https://www.gingerbill.org/article/2019/02/08/memory-allocation-strategies-002/
 bool is_power_of_two(uintptr_t x)
@@ -270,6 +277,39 @@ internal bool is_digit(char c)
     return c >= '0' && c <= '9';
 }
 
+/////////////////////////////////////////
+// Vec impl start
+
+#define VEC_INIT_CAP 16
+
+#define vec_ensure_cap(arena, v, new_count)                                                                                 \
+    do {                                                                                                                    \
+        if (new_count >= (v)->capacity) {                                                                                   \
+            size_t old_cap = (v)->capacity;                                                                                 \
+            if ((v)->capacity == 0)                                                                                         \
+                (v)->capacity = VEC_INIT_CAP;                                                                               \
+            while ((v)->capacity <= new_count)                                                                              \
+                (v)->capacity *= 2;                                                                                         \
+            (v)->data = arena_resize((arena), (v)->data, old_cap * sizeof(*(v)->data), (v)->capacity * sizeof(*(v)->data)); \
+        }                                                                                                                   \
+    } while (0)
+
+#define vec_append(arena, v, item)              \
+    do {                                        \
+        vec_ensure_cap(arena, v, (v)->len + 1); \
+        (v)->data[(v)->len++] = (item);         \
+    } while (0)
+
+#define vec_append_many(arena, v, addendum, addendum_count)                              \
+    do {                                                                                 \
+        vec_ensure_cap(arena, v, (v)->len + (addendum_count));                           \
+        memcpy((v)->data + (v)->len, (addendum), (addendum_count) * sizeof(*(v)->data)); \
+        (v)->len += (addendum_count);                                                    \
+    } while (0)
+
+// Vec impl end
+////////////////////////////////////////
+
 ////////////////////////////////////////
 // String and StringView impl start
 
@@ -278,6 +318,9 @@ internal bool is_digit(char c)
 #define SV_Arg(sv) (int)(sv).len, (sv).data
 
 #define SV_NULL sv_from_parts(NULL, 0)
+
+#define SV_STATIC(cstr_lit) \
+    (StringView) { .len = sizeof(cstr_lit) - 1, .data = (cstr_lit) }
 
 internal String
 sv_to_owned(Arena* arena, StringView sv)
@@ -465,6 +508,7 @@ sv_ends_with(StringView sv, StringView expected_suffix)
         StringView actual_suffix = sv_from_parts(sv.data + sv.len - expected_suffix.len, expected_suffix.len);
         return sv_eq(expected_suffix, actual_suffix);
     }
+    return false;
 }
 
 internal uint64_t
