@@ -15,6 +15,15 @@
 
 #include "base.h"
 
+/*
+TODO:
+    - actually handle the path parameters
+    - handle response headers properly!
+    - handle query params
+    - handle forms data?
+    - handle json requests?
+*/
+
 const char* global_directory_path = NULL;
 
 String read_entire_file_arena(Arena* arena, const char* filename)
