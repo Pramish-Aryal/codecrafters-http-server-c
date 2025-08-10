@@ -381,10 +381,10 @@ void handle_route_user_agent(Arena* arena, HttpRequest* request, HttpResponse* r
 
 void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* response)
 {
-    StringView accept_encoding = { 0 };
-    const char* accept_encoding_cstr = hash_table_get(&request->headers, ACCEPT_ENCODING_SV);
-    if (accept_encoding_cstr) {
-        accept_encoding = sv_from_cstr(accept_encoding_cstr);
+    StringView accept_encodings = { 0 };
+    const char* accept_encodings_cstr = hash_table_get(&request->headers, ACCEPT_ENCODING_SV);
+    if (accept_encodings_cstr) {
+        accept_encodings = sv_from_cstr(accept_encodings_cstr);
     };
     StringView echo = sv_from_cstr(hash_table_get(&request->route_params, SV_STATIC("echo")));
     String response_body = (String) {
@@ -392,7 +392,20 @@ void handle_route_echo(Arena* arena, HttpRequest* request, HttpResponse* respons
         .capacity = 1024,
     };
 
-    if (sv_eq(accept_encoding, SV_STATIC("gzip"))) {
+    bool gzip_found = false;
+    if (accept_encodings.len > 0) {
+        // we can have a multitude of accepted encodings
+        StringView accept_encoding = sv_trim(sv_chop_by_delim(&accept_encodings, ','));
+        while (accept_encoding.len > 0) {
+            if (sv_eq(accept_encoding, SV_STATIC("gzip"))) {
+                gzip_found = true;
+                break;
+            }
+            accept_encoding = sv_trim(sv_chop_by_delim(&accept_encodings, ','));
+        }
+    }
+
+    if (gzip_found) {
         response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
     } else {
         response_body.len = snprintf(response_body.data, response_body.capacity, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" SV_Fmt, (int)echo.len, SV_Arg(echo));
